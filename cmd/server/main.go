@@ -14,8 +14,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const authorizationCookieName = "authorization"
-
 type User struct {
 	ID       uint   `json:"id"`
 	Username string `json:"username"`
@@ -110,6 +108,8 @@ type SessionStore struct {
 	tokens map[string]User
 }
 
+const authorizationCookieName = "authorization"
+
 func main() {
 	store, err := openStore("./app.db", "./schema.sql", "./seed.sql")
 	if err != nil {
@@ -127,20 +127,21 @@ func main() {
 		auth.POST("/register", func(c *gin.Context) {
 			var request RegisterRequest
 			if err := c.ShouldBindJSON(&request); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"message": "invalid register request"})
+				c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request"})
 				return
 			}
 
-			c.JSON(http.StatusAccepted, gin.H{
-				"message": "dummy register handler",
-				"todo":    "replace with actual signup validation and insert query",
-				"user": gin.H{
-					"username": request.Username,
-					"name":     request.Name,
-					"email":    request.Email,
-					"phone":    request.Phone,
-				},
-			})
+			_, err := store.db.Exec(`
+					INSERT INTO users (username, name, email, phone, password, balance, is_admin)
+					VALUES (?, ?, ?, ?, ?, 0, 0)
+				`, request.Username, request.Name, request.Email, request.Phone, request.Password)
+
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "registration failed"})
+				return
+			}
+
+			c.JSON(http.StatusCreated, gin.H{"message": "registered successfully"})
 		})
 
 		auth.POST("/login", func(c *gin.Context) {
@@ -188,10 +189,8 @@ func main() {
 
 			sessions.delete(token)
 			clearAuthorizationCookie(c)
-			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy logout handler",
-				"todo":    "replace with revoke or audit logic if needed",
-			})
+			c.JSON(http.StatusOK, gin.H{"message": "logout successfully"})
+
 		})
 
 		auth.POST("/withdraw", func(c *gin.Context) {
@@ -212,9 +211,16 @@ func main() {
 				return
 			}
 
+			_, err := store.db.Exec(`Delete From users Where id = ?`, user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to delete user"})
+				return
+			}
+
+			c.Redirect(http.StatusFound, "http://localhost:8080")
+
 			c.JSON(http.StatusAccepted, gin.H{
-				"message": "dummy withdraw handler",
-				"todo":    "replace with password check and account delete logic",
+				"message": "withdraw succesfully",
 				"user":    makeUserResponse(user),
 			})
 		})
@@ -235,6 +241,8 @@ func main() {
 			}
 
 			c.JSON(http.StatusOK, gin.H{"user": makeUserResponse(user)})
+			//c.Redirect(http.StatusMovedPermanently, "http://localhost:8080")
+
 		})
 
 		protected.POST("/banking/deposit", func(c *gin.Context) {
@@ -255,11 +263,15 @@ func main() {
 				return
 			}
 
+			_, err := store.db.Exec(`Update users Set balance = balance + ? Where id = ?`, request.Amount, user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to deposit account"})
+				return
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy deposit handler",
-				"todo":    "replace with balance increment query",
+				"message": "deposit successful",
 				"user":    makeUserResponse(user),
-				"amount":  request.Amount,
 			})
 		})
 
@@ -281,11 +293,15 @@ func main() {
 				return
 			}
 
+			_, err := store.db.Exec(`Update users Set balance = balance - ? Where id = ?`, request.Amount, user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to withdraw account"})
+				return
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy withdraw handler",
-				"todo":    "replace with balance check and decrement query",
+				"message": "withdraw successful",
 				"user":    makeUserResponse(user),
-				"amount":  request.Amount,
 			})
 		})
 
@@ -306,11 +322,22 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
+			//송금
+			_, Send := store.db.Exec(`Update users Set balance = balance + ? Where id = ?`, request.Amount, request.ToUsername)
+			if Send != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to deposit account"})
+				return
+			}
+
+			//내 계좌 출금
+			_, My_ac := store.db.Exec(`Update users Set balance = balance - ? Where id = ?`, request.Amount, user.ID)
+			if My_ac != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to withdraw account"})
+				return
+			}
 
 			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy transfer handler",
-				"todo":    "replace with transfer transaction and balance checks",
-				"user":    makeUserResponse(user),
+				"message": "transfer successful",
 				"target":  request.ToUsername,
 				"amount":  request.Amount,
 			})
@@ -326,21 +353,26 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
+			/*ID:          1,
+			  Title:       strings.TrimSpace(request.Title),
+			  Content:     strings.TrimSpace(request.Content),
+			  OwnerID:     user.ID,
+			  Author:      user.Name,
+			  AuthorEmail: user.Email,
+			  CreatedAt:   now,
+			  UpdatedAt:*/
+			var posts []PostView
+			rows, _ := store.db.Query(`SELECT p.id, p.title, p.content, p.owner_id, u.name, u.email, p.created_at, p.updated_at
+					FROM posts p JOIN users u ON p.owner_id = u.id`)
 
-			c.JSON(http.StatusOK, PostListResponse{
-				Posts: []PostView{
-					{
-						ID:          1,
-						Title:       "Dummy Post",
-						Content:     "This is a fixed dummy response. Replace this later with real board logic.",
-						OwnerID:     1,
-						Author:      "Alice Admin",
-						AuthorEmail: "alice.admin@example.com",
-						CreatedAt:   "2026-03-19T09:00:00Z",
-						UpdatedAt:   "2026-03-19T09:00:00Z",
-					},
-				},
-			})
+			for rows.Next() {
+				var p PostView
+
+				rows.Scan(&p.ID, &p.Title, &p.Content, &p.OwnerID, &p.Author, &p.AuthorEmail, &p.CreatedAt, &p.UpdatedAt)
+				posts = append(posts, p)
+			}
+			c.JSON(http.StatusOK, gin.H{"posts": posts})
+
 		})
 
 		protected.POST("/posts", func(c *gin.Context) {
@@ -362,9 +394,16 @@ func main() {
 			}
 
 			now := time.Now().Format(time.RFC3339)
+
+			_, err := store.db.Exec(`INSERT INTO posts (title, content, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+				request.Title, request.Content, user.ID, now, now)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to withdraw account"})
+				return
+			}
+
 			c.JSON(http.StatusCreated, gin.H{
-				"message": "dummy create post handler",
-				"todo":    "replace with insert query",
+				"message": "posted successful",
 				"post": PostView{
 					ID:          1,
 					Title:       strings.TrimSpace(request.Title),
@@ -424,7 +463,6 @@ func main() {
 			now := time.Now().Format(time.RFC3339)
 			c.JSON(http.StatusOK, gin.H{
 				"message": "dummy update post handler",
-				"todo":    "replace with ownership check and update query",
 				"post": PostView{
 					ID:          1,
 					Title:       strings.TrimSpace(request.Title),
@@ -439,6 +477,7 @@ func main() {
 		})
 
 		protected.DELETE("/posts/:id", func(c *gin.Context) {
+			var p PostView
 			token := tokenFromRequest(c)
 			if token == "" {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "missing authorization token"})
@@ -448,10 +487,19 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
+			user, ok := sessions.lookup(token)
+			if !ok {
+				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
+				return
+			}
 
+			_, err := store.db.Exec("DELETE FROM posts WHERE id = ? AND owner_id = ?", p.ID, user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to withdraw account"})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy delete post handler",
-				"todo":    "replace with ownership check and delete query",
+				"message": "delete post success",
 			})
 		})
 	}
